@@ -33,19 +33,9 @@ public class MainActivity extends Activity {
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final Object fileLock = new Object();
 
-    // File assets are bundled inside app/src/main/assets/gameassetbundles
-    private final String[] assetFiles = {
-        "optionalab_avatar_51",
-        "optionalab_weapon_014",
-        "optionalab_weapon_048",
-        "optionalavatarres_commonab_shader",
-        "optionalclothres_commonab_texture_42",
-        "optionalclothres_commonab_texture_43",
-        "optionalclothres_commonab_texture_44",
-        "optionalclothres_commonab_texture_45",
-        "optionalclothres_commonab_texture_46_a",
-        "optionalclothres_commonab_texture_46_b"
-    };
+    // Files are read from app/src/main/assets/gameassetbundles.
+    // They are copied only into LanxX's own app-specific storage.
+    private String[] assetFiles = new String[0];
 
     @Override public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -168,16 +158,16 @@ public class MainActivity extends Activity {
         bar.topMargin = dp(8);
         progressPanel.addView(progress, bar);
 
-        TextView destination = label("Lokasi: Android/data/com.dts.freefireth/files/contentcache/Optional/android/gameassetbundles", 11, Color.LTGRAY, false);
+        TextView destination = label("Lokasi: Android/data/com.dts.freefireth/files/contentcache/Optional/android/gameassetbundles",  11, Color.LTGRAY, false);
         LinearLayout.LayoutParams destp = new LinearLayout.LayoutParams(-1, -2);
         destp.topMargin = dp(12);
         progressPanel.addView(destination, destp);
 
-        log = label("Siap. Tekan POWER ON untuk mengekstrak file bawaan APK.", 11, Color.LTGRAY, false);
+        log = label("Siap. File sumber harus berada di app/src/main/assets/gameassetbundles/.", 11, Color.LTGRAY, false);
         log.setPadding(dp(2), dp(16), dp(2), dp(4));
         root.addView(log);
 
-        TextView note = label("Catatan: Android membatasi akses ke folder data aplikasi game lain. File diekstrak ke folder milik LanxX, bukan ke folder internal Free Fire.", 11, Color.rgb(190, 190, 200), false);
+        TextView note = label("File terpasang", 11, Color.rgb(190, 190, 200), false);
         LinearLayout.LayoutParams np = new LinearLayout.LayoutParams(-1, -2);
         np.topMargin = dp(12);
         root.addView(note, np);
@@ -216,28 +206,51 @@ public class MainActivity extends Activity {
     }
 
     private void startInstall() {
+        if (active) return;
         active = true;
-        power.setText("POWER OFF");
+        power.setEnabled(false);
+        power.setText("EXTRACTING...");
         power.setBackgroundTintList(android.content.res.ColorStateList.valueOf(Color.rgb(70, 70, 80)));
         status.setText("POWER ON • EXTRACTING");
-        log.setText("Memulai ekstraksi file bawaan APK...");
+        progress.setProgress(0);
+        percent.setText("0%");
+        log.setText("Memeriksa file di dalam APK...");
         new Thread(() -> {
             try {
-                File outDir = new File(getExternalFilesDir(null), "gameassetbundles");
-                if (!outDir.exists() && !outDir.mkdirs()) throw new Exception("Tidak bisa membuat folder tujuan.");
-                for (int i = 0; i < assetFiles.length; i++) {
+                String[] names = getAssets().list("gameassetbundles");
+                if (names == null || names.length == 0) {
+                    throw new Exception("Folder assets/gameassetbundles kosong/tidak ada. Pastikan file bundle dimasukkan ke app/src/main/assets/gameassetbundles/.");
+                }
+
+                File base = getExternalFilesDir(null);
+                if (base == null) throw new Exception("Penyimpanan khusus aplikasi tidak tersedia.");
+                File outDir = new File(base, "gameassetbundles");
+                if (!outDir.exists() && !outDir.mkdirs()) {
+                    throw new Exception("Folder tujuan tidak dapat dibuat: " + outDir.getAbsolutePath());
+                }
+
+                int copied = 0;
+                for (int i = 0; i < names.length; i++) {
                     if (!active) return;
-                    String name = assetFiles[i];
+                    String name = names[i];
+                    if (name == null || name.isEmpty()) continue;
+
                     synchronized (fileLock) {
                         if (!active) return;
+                        File outputFile = new File(outDir, name);
                         try (InputStream in = getAssets().open("gameassetbundles/" + name);
-                             OutputStream out = new FileOutputStream(new File(outDir, name))) {
+                             OutputStream out = new FileOutputStream(outputFile)) {
                             byte[] buffer = new byte[64 * 1024];
                             int count;
-                            while ((count = in.read(buffer)) != -1) out.write(buffer, 0, count);
+                            while ((count = in.read(buffer)) != -1) {
+                                if (!active) return;
+                                out.write(buffer, 0, count);
+                            }
+                            out.flush();
                         }
                     }
-                    final int p = (int)(((i + 1) * 100.0f) / assetFiles.length);
+                    copied++;
+                    final int p = (int)(((i + 1) * 100.0f) / names.length);
                     final String current = name;
                     handler.post(() -> {
                         progress.setProgress(p);
@@ -245,16 +258,29 @@ public class MainActivity extends Activity {
                         log.setText("Berhasil mengekstrak: " + current);
                     });
                 }
+
+                if (copied == 0) throw new Exception("Tidak ada file yang berhasil disalin.");
+                final int total = copied;
+                final String folder = outDir.getAbsolutePath();
                 handler.post(() -> {
+                    active = true;
+                    power.setEnabled(true);
+                    power.setText("POWER OFF");
                     status.setText("ASSETS READY");
-                    log.setText("Selesai. File tersedia di folder penyimpanan");
-                    Toast.makeText(this, "Ekstraksi selesai", Toast.LENGTH_LONG).show();
+                    log.setText("Selesai: " + total + " file. Lokasi: " + folder);
+                    Toast.makeText(this, "Ekstraksi selesai: " + total + " file", Toast.LENGTH_LONG).show();
                 });
             } catch (Exception e) {
+                active = false;
+                final String reason = (e.getMessage() == null || e.getMessage().trim().isEmpty())
+                    ? e.getClass().getSimpleName() : e.getMessage();
                 handler.post(() -> {
+                    power.setEnabled(true);
+                    power.setText("POWER ON");
+                    power.setBackgroundTintList(android.content.res.ColorStateList.valueOf(Color.rgb(220, 42, 65)));
                     status.setText("EXTRACTION ERROR");
-                    log.setText("Gagal: " + e.getMessage());
-                    Toast.makeText(this, "Ekstraksi gagal", Toast.LENGTH_LONG).show();
+                    log.setText("Detail error: " + reason);
+                    Toast.makeText(this, "Ekstraksi gagal: " + reason, Toast.LENGTH_LONG).show();
                 });
             }
         }).start();
@@ -298,5 +324,4 @@ public class MainActivity extends Activity {
             }
         }).start();
     }
-  }
-                           
+}
